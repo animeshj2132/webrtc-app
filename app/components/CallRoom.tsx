@@ -16,7 +16,30 @@ const ICE_SERVERS: RTCIceServer[] = [
 ];
 
 function useAttachStream(ref: React.RefObject<HTMLVideoElement>, stream: MediaStream | null) {
-  useEffect(() => { if (ref.current) (ref.current as HTMLVideoElement).srcObject = stream as any; }, [ref, stream]);
+  useEffect(() => {
+    const el = ref.current as HTMLVideoElement | null;
+    if (!el) return;
+    // Attach stream if changed
+    if ((el as any).srcObject !== stream) (el as any).srcObject = stream as any;
+    if (!stream) return;
+    // Force playback to avoid autoplay blocking
+    const attemptPlay = () => {
+      try {
+        const p = el.play();
+        if (p && typeof p.then === 'function') {
+          p.catch((err: any) => {
+            // If autoplay with audio is blocked, mute and retry like MiroTalk does
+            if (err && (err.name === 'NotAllowedError' || err.code === 0)) {
+              el.muted = true;
+              el.volume = 0;
+              try { el.play().catch(() => {}); } catch {}
+            }
+          });
+        }
+      } catch {}
+    };
+    if (el.readyState >= 2) attemptPlay(); else el.onloadedmetadata = attemptPlay;
+  }, [ref, stream]);
 }
 interface RemotePeer { peerId: PeerId; pc: RTCPeerConnection; stream: MediaStream; }
 
