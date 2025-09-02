@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 import type { SignalMessage, PeerId, RoomId } from "./types";
 
-const SIGNAL_URL = process.env.NEXT_PUBLIC_SIGNAL_URL!; // required
+const SIGNAL_URL = process.env.NEXT_PUBLIC_SIGNAL_URL || 'wss://server-3gkv.onrender.com';
 const TURN_URL = process.env.NEXT_PUBLIC_TURN_URL;
 const TURN_USERNAME = process.env.NEXT_PUBLIC_TURN_USERNAME;
 const TURN_CREDENTIAL = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
@@ -76,6 +76,7 @@ interface RemotePeer { peerId: PeerId; pc: RTCPeerConnection; stream: MediaStrea
 export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) {
   const [roomId, setRoomId] = useState<RoomId>(initialRoomId || "demo-room");
   const [connected, setConnected] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [peerId] = useState<PeerId>(() => uuidv4());
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [micOn, setMicOn] = useState(true);
@@ -187,26 +188,33 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
     wsRef.current?.send(JSON.stringify({ type: "offer", payload: { from: peerId, to: otherId, sdp: offer } } as SignalMessage));
   }
   async function join() {
-    if (connected) return;
+    if (connected || connecting || wsRef.current) {
+      console.log('Already connected or connecting, ignoring join attempt');
+      return;
+    }
+    
+    setConnecting(true);
     console.log('Joining room:', roomId, 'with peer ID:', peerId);
     console.log('Signal server URL:', SIGNAL_URL);
     
-    // Get media FIRST and ensure it's available in ref
-    const stream = await getUserMedia();
-    await refreshDevices();
-    console.log('Local stream tracks after getUserMedia:', stream?.getTracks().map(t => `${t.kind}: ${t.enabled}`));
-    
-    // Ensure the ref has the stream
-    currentStreamRef.current = stream;
-    console.log('Stream available in ref:', !!currentStreamRef.current);
-    
-    const ws = new WebSocket(SIGNAL_URL);
-    wsRef.current = ws;
+    try {
+      // Get media FIRST and ensure it's available in ref
+      const stream = await getUserMedia();
+      await refreshDevices();
+      console.log('Local stream tracks after getUserMedia:', stream?.getTracks().map(t => `${t.kind}: ${t.enabled}`));
+      
+      // Ensure the ref has the stream
+      currentStreamRef.current = stream;
+      console.log('Stream available in ref:', !!currentStreamRef.current);
+      
+      const ws = new WebSocket(SIGNAL_URL);
+      wsRef.current = ws;
     ws.onopen = () => {
       console.log('WebSocket connected to signaling server');
       console.log('Local stream available for connections:', !!localStream || !!stream);
       ws.send(JSON.stringify({ type: "join", payload: { room: roomId, peerId } } as SignalMessage));
       setConnected(true);
+      setConnecting(false);
     };
     ws.onmessage = async (ev) => {
       const msg: SignalMessage = JSON.parse(ev.data);
@@ -291,12 +299,26 @@ if (msg.type === "new-peer") {
       console.error('WebSocket error:', error);
       cleanup();
     };
+    } catch (error) {
+      console.error('Failed to join room:', error);
+      cleanup();
+    }
   }
   function cleanup() {
+    console.log('Cleaning up connection');
     setConnected(false);
+    setConnecting(false);
     for (const [, rp] of peersRef.current) { rp.stream.getTracks().forEach(t => t.stop()); rp.pc.close(); }
     peersRef.current.clear();
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); setLocalStream(null); }
+    if (currentStreamRef.current) { 
+      currentStreamRef.current.getTracks().forEach(t => t.stop()); 
+      currentStreamRef.current = null; 
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
     setSharing(false);
   }
   function leave() {
@@ -358,7 +380,7 @@ if (msg.type === "new-peer") {
     const h = () => leave();
     window.addEventListener("beforeunload", h);
     return () => window.removeEventListener("beforeunload", h);
-  }, [connected, localStream]);
+  }, []);
 
   return (
     <div style={{ minHeight: "100vh", padding: 24 }}>
@@ -367,7 +389,9 @@ if (msg.type === "new-peer") {
         <input value={roomId} onChange={(e) => setRoomId(e.target.value)} placeholder="Room ID"
           style={{ background: "#111827", border: "1px solid #1f2937", color: "white", borderRadius: 8, padding: "8px 12px" }} />
         {!connected
-          ? <button onClick={join} style={{ background: "#16a34a", borderRadius: 8, padding: "8px 14px" }}>Join</button>
+          ? <button onClick={join} disabled={connecting} style={{ background: connecting ? "#6b7280" : "#16a34a", borderRadius: 8, padding: "8px 14px" }}>
+              {connecting ? "Connecting..." : "Join"}
+            </button>
           : <button onClick={leave} style={{ background: "#dc2626", borderRadius: 8, padding: "8px 14px" }}>Leave</button>}
         <button onClick={copyInvite} style={{ background: "#2563eb", borderRadius: 8, padding: "8px 14px" }}>Copy Link</button>
       </div>
