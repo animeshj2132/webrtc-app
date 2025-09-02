@@ -10,6 +10,10 @@ const TURN_CREDENTIAL = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
 
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: ["stun:stun.l.google.com:19302"] },
+  { urls: ["stun:stun1.l.google.com:19302"] },
+  { urls: ["stun:stun2.l.google.com:19302"] },
+  { urls: ["stun:stun3.l.google.com:19302"] },
+  { urls: ["stun:stun4.l.google.com:19302"] },
   ...(TURN_URL && TURN_USERNAME && TURN_CREDENTIAL
     ? [{ urls: TURN_URL, username: TURN_USERNAME, credential: TURN_CREDENTIAL }]
     : [])
@@ -88,7 +92,7 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
       }
     }
   }
-  function createPC(remoteId: PeerId) {
+  function createPC(remoteId: PeerId, streamToUse?: MediaStream) {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     const remoteStream = new MediaStream();
     
@@ -96,27 +100,30 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
       console.log('Received track from peer', remoteId, 'track kind:', e.track.kind);
       
       // Use the stream from the event if available, otherwise use our created stream
-      const streamToUse = e.streams && e.streams.length > 0 ? e.streams[0] : remoteStream;
+      const incomingStream = e.streams && e.streams.length > 0 ? e.streams[0] : remoteStream;
       
       // If we're using our own stream, add the track to it
-      if (streamToUse === remoteStream) {
+      if (incomingStream === remoteStream) {
         remoteStream.addTrack(e.track);
       }
       
       const rp = peersRef.current.get(remoteId);
       if (rp) {
-        rp.stream = streamToUse;
+        rp.stream = incomingStream;
       } else {
-        peersRef.current.set(remoteId, { peerId: remoteId, pc, stream: streamToUse });
+        peersRef.current.set(remoteId, { peerId: remoteId, pc, stream: incomingStream });
       }
       
-      console.log('Remote stream updated for peer', remoteId, 'tracks:', streamToUse.getTracks().length);
+      console.log('Remote stream updated for peer', remoteId, 'tracks:', incomingStream.getTracks().length);
       force();
     };    
     pc.onicecandidate = (e) => {
       if (e.candidate && wsRef.current) {
+        console.log('Sending ICE candidate to peer:', remoteId, 'type:', e.candidate.type);
         const msg: SignalMessage = { type: "ice", payload: { from: peerId, to: remoteId, candidate: e.candidate.toJSON() } };
         wsRef.current.send(JSON.stringify(msg));
+      } else if (!e.candidate) {
+        console.log('ICE gathering completed for peer:', remoteId);
       }
     };
     pc.onconnectionstatechange = () => {
@@ -126,15 +133,18 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
         pc.close(); peersRef.current.delete(remoteId); force();
       }
     };
-    if (localStream) {
+    
+    // Use the provided stream or current localStream
+    const currentStream = streamToUse || localStream;
+    if (currentStream) {
       console.log('Adding local stream tracks to peer connection for:', remoteId);
-      localStream.getTracks().forEach(t => {
+      currentStream.getTracks().forEach(t => {
         console.log('Adding track:', t.kind, 'enabled:', t.enabled);
-        pc.addTrack(t, localStream);
+        pc.addTrack(t, currentStream);
       });
       applySenderBitrateCaps(pc);
     } else {
-      console.warn('No local stream available when creating PC for:', remoteId);
+      console.error('CRITICAL: No local stream available when creating PC for:', remoteId);
     }
     peersRef.current.set(remoteId, { peerId: remoteId, pc, stream: remoteStream });
     return pc;
@@ -152,13 +162,20 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
     if (connected) return;
     console.log('Joining room:', roomId, 'with peer ID:', peerId);
     console.log('Signal server URL:', SIGNAL_URL);
-    await getUserMedia();
+    
+    // Get media FIRST and wait for it to be set in state
+    const stream = await getUserMedia();
     await refreshDevices();
-    console.log('Local stream tracks after getUserMedia:', localStream?.getTracks().map(t => `${t.kind}: ${t.enabled}`));
+    console.log('Local stream tracks after getUserMedia:', stream?.getTracks().map(t => `${t.kind}: ${t.enabled}`));
+    
+    // Wait a bit for state to update
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
     const ws = new WebSocket(SIGNAL_URL);
     wsRef.current = ws;
     ws.onopen = () => {
       console.log('WebSocket connected to signaling server');
+      console.log('Local stream available for connections:', !!localStream || !!stream);
       ws.send(JSON.stringify({ type: "join", payload: { room: roomId, peerId } } as SignalMessage));
       setConnected(true);
     };
@@ -167,7 +184,18 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
       // Newcomer makes the offer to existing peers.
   if (msg.type === "peers") {
   console.log('Received peers list:', msg.payload.peers);
-  for (const id of msg.payload.peers) await callPeer(id);
+  console.log('Current local stream when receiving peers:', !!localStream, !!stream);
+  
+  // Ensure we have local stream before making calls
+  const currentStream = localStream || stream;
+  if (!currentStream) {
+    console.error('CRITICAL: No local stream available when trying to call peers!');
+    return;
+  }
+  
+  for (const id of msg.payload.peers) {
+    await callPeer(id);
+  }
 }
 
 // Existing peers do NOT initiate on new-peer; they just wait for the offer.
@@ -178,17 +206,26 @@ if (msg.type === "new-peer") {
       if (msg.type === "offer") {
         const { from, sdp } = msg.payload;
         console.log('Received offer from peer:', from);
+        console.log('Local stream available for answer:', !!localStream, !!stream);
+        
+        // Ensure we have local stream before creating PC
+        const currentStream = localStream || stream;
+        if (!currentStream) {
+          console.error('CRITICAL: No local stream available when receiving offer from:', from);
+          return;
+        }
+        
         if (!peersRef.current.get(from)) {
-          createPC(from);
+          createPC(from, currentStream);
         }
         const pc = peersRef.current.get(from)!.pc;
         
         // Ensure local stream is added to the peer connection
-        if (localStream && pc.getSenders().length === 0) {
+        if (pc.getSenders().length === 0) {
           console.log('Adding local stream to existing PC for:', from);
-          localStream.getTracks().forEach(t => {
+          currentStream.getTracks().forEach(t => {
             console.log('Adding track to existing PC:', t.kind, 'enabled:', t.enabled);
-            pc.addTrack(t, localStream);
+            pc.addTrack(t, currentStream);
           });
           applySenderBitrateCaps(pc);
         }
@@ -207,7 +244,13 @@ if (msg.type === "new-peer") {
       }
       if (msg.type === "ice") {
         const { from, candidate } = msg.payload; const rp = peersRef.current.get(from); if (!rp) return;
-        try { await rp.pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {}
+        console.log('Received ICE candidate from peer:', from, 'type:', candidate.type);
+        try { 
+          await rp.pc.addIceCandidate(new RTCIceCandidate(candidate)); 
+          console.log('Successfully added ICE candidate from peer:', from);
+        } catch (err) {
+          console.error('Failed to add ICE candidate from peer:', from, err);
+        }
       }
       if (msg.type === "leave") {
         const { peerId: leaving } = msg.payload; const rp = peersRef.current.get(leaving); if (!rp) return;
