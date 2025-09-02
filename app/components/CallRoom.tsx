@@ -24,49 +24,59 @@ function useAttachStream(ref: React.RefObject<HTMLVideoElement>, stream: MediaSt
     const el = ref.current as HTMLVideoElement | null;
     if (!el) return;
     
-    // Simple, direct attachment
     if ((el as any).srcObject !== stream) {
       console.log('Attaching stream to video element:', !!stream, stream?.getTracks().length);
+      
+      // Clear previous stream first
+      (el as any).srcObject = null;
+      
       if (stream) {
         console.log('Stream tracks details:');
         stream.getTracks().forEach(track => {
           console.log(`- ${track.kind}: enabled=${track.enabled}, readyState=${track.readyState}, muted=${track.muted}`);
         });
-      }
-      
-      // Direct assignment without complex refresh logic
-      (el as any).srcObject = stream;
-      
-      if (stream) {
-        // Force specific attributes
-        el.muted = true;
-        el.autoplay = true;
-        el.playsInline = true;
         
-        // Immediate play attempt
-        const forcePlay = async () => {
-          try {
-            await el.play();
-            console.log('Video playing immediately');
+        // Wait for tracks to be ready, then attach
+        const attachWhenReady = () => {
+          const videoTrack = stream.getVideoTracks()[0];
+          if (videoTrack && videoTrack.readyState === 'live') {
+            console.log('Video track is live, attaching stream');
             
-            // Check dimensions after play
-            setTimeout(() => {
-              console.log('Final video check:', {
-                videoWidth: el.videoWidth,
-                videoHeight: el.videoHeight,
-                paused: el.paused,
-                readyState: el.readyState
-              });
-            }, 1000);
-          } catch (e) {
-            console.log('Immediate play failed:', e);
+            // Set video properties
+            el.muted = true;
+            el.autoplay = true;
+            el.playsInline = true;
+            
+            // Attach stream
+            (el as any).srcObject = stream;
+            
+            // Single play attempt after attachment
+            setTimeout(async () => {
+              try {
+                await el.play();
+                console.log('Video playing successfully');
+                
+                // Check after 2 seconds
+                setTimeout(() => {
+                  console.log('Video status:', {
+                    videoWidth: el.videoWidth,
+                    videoHeight: el.videoHeight,
+                    paused: el.paused,
+                    currentTime: el.currentTime,
+                    duration: el.duration
+                  });
+                }, 2000);
+              } catch (e) {
+                console.log('Play failed:', e);
+              }
+            }, 200);
+          } else {
+            console.log('Video track not ready yet, waiting...');
+            setTimeout(attachWhenReady, 100);
           }
         };
         
-        // Try play immediately and with delays
-        forcePlay();
-        setTimeout(forcePlay, 100);
-        setTimeout(forcePlay, 500);
+        attachWhenReady();
       }
     }
   }, [ref, stream]);
@@ -462,30 +472,45 @@ function RemoteTile({ rp }: { rp: RemotePeer }) {
   
   useAttachStream(ref, rp.stream);
   
-  // Simple click handler
+  // Enhanced click handler with stream refresh
   const handleClick = async () => {
     if (ref.current) {
-      console.log('Manual play attempt on remote video');
+      console.log('Manual click - attempting stream refresh');
+      const video = ref.current;
+      
       try {
-        ref.current.muted = true;
-        await ref.current.play();
-        console.log('Manual play successful');
+        // Force complete refresh
+        video.srcObject = null;
+        video.load();
         
-        // Debug what we have
         setTimeout(() => {
-          const video = ref.current;
-          if (video) {
-            console.log('After manual play:', {
-              videoWidth: video.videoWidth,
-              videoHeight: video.videoHeight,
-              paused: video.paused,
-              readyState: video.readyState,
-              currentTime: video.currentTime
-            });
-          }
-        }, 500);
+          video.srcObject = rp.stream;
+          video.muted = true;
+          video.autoplay = true;
+          video.playsInline = true;
+          
+          setTimeout(async () => {
+            try {
+              await video.play();
+              console.log('Manual refresh play successful');
+              
+              setTimeout(() => {
+                console.log('After manual refresh:', {
+                  videoWidth: video.videoWidth,
+                  videoHeight: video.videoHeight,
+                  paused: video.paused,
+                  readyState: video.readyState,
+                  currentTime: video.currentTime,
+                  hasVideoTracks: rp.stream.getVideoTracks().length > 0
+                });
+              }, 1000);
+            } catch (e) {
+              console.log('Manual refresh play failed:', e);
+            }
+          }, 200);
+        }, 100);
       } catch (e) {
-        console.log('Manual play failed:', e);
+        console.log('Manual refresh failed:', e);
       }
     }
   };
