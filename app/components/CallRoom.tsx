@@ -24,7 +24,7 @@ function useAttachStream(ref: React.RefObject<HTMLVideoElement>, stream: MediaSt
     const el = ref.current as HTMLVideoElement | null;
     if (!el) return;
     
-    // Attach stream if changed
+    // Simple, direct attachment
     if ((el as any).srcObject !== stream) {
       console.log('Attaching stream to video element:', !!stream, stream?.getTracks().length);
       if (stream) {
@@ -34,96 +34,40 @@ function useAttachStream(ref: React.RefObject<HTMLVideoElement>, stream: MediaSt
         });
       }
       
-      // Force refresh the video element to fix rendering issues
-      (el as any).srcObject = null;
-      setTimeout(() => {
-        (el as any).srcObject = stream as any;
+      // Direct assignment without complex refresh logic
+      (el as any).srcObject = stream;
+      
+      if (stream) {
+        // Force specific attributes
+        el.muted = true;
+        el.autoplay = true;
+        el.playsInline = true;
         
-        // Force the video element to reload/refresh
-        if (stream) {
-          el.load();
-          
-          // Check video dimensions after a delay
-          setTimeout(() => {
-            console.log('Video dimensions after refresh:', {
-              videoWidth: el.videoWidth,
-              videoHeight: el.videoHeight,
-              readyState: el.readyState
-            });
+        // Immediate play attempt
+        const forcePlay = async () => {
+          try {
+            await el.play();
+            console.log('Video playing immediately');
             
-            // If still no dimensions, try more aggressive refresh
-            if (el.videoWidth === 0 && el.videoHeight === 0) {
-              console.log('Video still has no dimensions, forcing play');
-              el.play().catch(() => {});
-            }
-          }, 500);
-        }
-      }, 50);
-    }
-    
-    if (!stream) return;
-    
-    // Force playback to avoid autoplay blocking
-    const attemptPlay = async () => {
-      console.log('Attempting to play video element, readyState:', el.readyState, 'paused:', el.paused);
-      
-      // Set properties to ensure video can play
-      el.muted = true; // Start muted to avoid autoplay blocks
-      el.autoplay = true;
-      el.playsInline = true;
-      
-      try {
-        const playPromise = el.play();
-        if (playPromise) {
-          await playPromise;
-          console.log('Video playing successfully (muted)');
-          
-          // Try to unmute after successful play
-          setTimeout(() => {
-            el.muted = false;
-            console.log('Unmuted video');
-          }, 500);
-        }
-      } catch (err: any) {
-        console.log('Initial play failed:', err.name, err.message);
+            // Check dimensions after play
+            setTimeout(() => {
+              console.log('Final video check:', {
+                videoWidth: el.videoWidth,
+                videoHeight: el.videoHeight,
+                paused: el.paused,
+                readyState: el.readyState
+              });
+            }, 1000);
+          } catch (e) {
+            console.log('Immediate play failed:', e);
+          }
+        };
         
-        // Force play with different strategies
-        try {
-          el.load(); // Reload the video element
-          await new Promise(resolve => setTimeout(resolve, 100));
-          await el.play();
-          console.log('Video playing after reload');
-        } catch (err2) {
-          console.log('Reload play failed:', err2);
-          
-          // Last resort - click simulation
-          setTimeout(() => {
-            console.log('Attempting click simulation for autoplay');
-            el.click();
-          }, 1000);
-        }
+        // Try play immediately and with delays
+        forcePlay();
+        setTimeout(forcePlay, 100);
+        setTimeout(forcePlay, 500);
       }
-    };
-    
-    // Multiple play attempts
-    const tryPlay = () => {
-      attemptPlay();
-      // Retry after a short delay
-      setTimeout(attemptPlay, 100);
-      setTimeout(attemptPlay, 500);
-    };
-    
-    if (el.readyState >= 2) {
-      tryPlay();
-    } else {
-      el.onloadedmetadata = () => {
-        console.log('Video metadata loaded, readyState:', el.readyState);
-        tryPlay();
-      };
-      el.oncanplay = () => {
-        console.log('Video can play, readyState:', el.readyState);
-        tryPlay();
-      };
     }
   }, [ref, stream]);
 }
@@ -515,71 +459,10 @@ function Participants({ peersRef }: { peersRef: React.MutableRefObject<Map<PeerI
 }
 function RemoteTile({ rp }: { rp: RemotePeer }) {
   const ref = useRef<HTMLVideoElement>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [videoKey, setVideoKey] = useState(0); // Force re-render when needed
   
   useAttachStream(ref, rp.stream);
   
-  // Check if video is actually displaying content
-  useEffect(() => {
-    const checkVideoContent = () => {
-      const video = ref.current;
-      if (!video || !video.srcObject) return;
-      
-      // If video is "playing" but has no dimensions, recreate it
-      if (!video.paused && video.videoWidth === 0 && video.videoHeight === 0) {
-        console.log('Video element stuck, recreating...');
-        setVideoKey(prev => prev + 1); // Force re-render
-      }
-    };
-    
-    const interval = setInterval(checkVideoContent, 2000);
-    return () => clearInterval(interval);
-  }, [rp.stream]);
-  
-  // Monitor playing state
-  useEffect(() => {
-    const video = ref.current;
-    if (!video) return;
-    
-    const onPlay = () => {
-      console.log('Remote video started playing');
-      console.log('Video element properties:', {
-        videoWidth: video.videoWidth,
-        videoHeight: video.videoHeight,
-        readyState: video.readyState,
-        paused: video.paused,
-        muted: video.muted,
-        srcObjectTracks: video.srcObject ? (video.srcObject as MediaStream).getTracks().length : 0
-      });
-      
-      // Check if tracks are enabled
-      if (video.srcObject) {
-        const stream = video.srcObject as MediaStream;
-        stream.getTracks().forEach(track => {
-          console.log(`Track ${track.kind}: enabled=${track.enabled}, readyState=${track.readyState}`);
-        });
-      }
-      
-      setIsPlaying(true);
-    };
-    const onPause = () => {
-      console.log('Remote video paused');
-      setIsPlaying(false);
-    };
-    
-    video.addEventListener('play', onPlay);
-    video.addEventListener('pause', onPause);
-    video.addEventListener('playing', onPlay);
-    
-    return () => {
-      video.removeEventListener('play', onPlay);
-      video.removeEventListener('pause', onPause);
-      video.removeEventListener('playing', onPlay);
-    };
-  }, []);
-  
-  // Force click-to-play as fallback
+  // Simple click handler
   const handleClick = async () => {
     if (ref.current) {
       console.log('Manual play attempt on remote video');
@@ -587,8 +470,19 @@ function RemoteTile({ rp }: { rp: RemotePeer }) {
         ref.current.muted = true;
         await ref.current.play();
         console.log('Manual play successful');
+        
+        // Debug what we have
         setTimeout(() => {
-          if (ref.current) ref.current.muted = false;
+          const video = ref.current;
+          if (video) {
+            console.log('After manual play:', {
+              videoWidth: video.videoWidth,
+              videoHeight: video.videoHeight,
+              paused: video.paused,
+              readyState: video.readyState,
+              currentTime: video.currentTime
+            });
+          }
         }, 500);
       } catch (e) {
         console.log('Manual play failed:', e);
@@ -599,42 +493,42 @@ function RemoteTile({ rp }: { rp: RemotePeer }) {
   return (
     <div style={{ background: "rgba(0,0,0,0.4)", borderRadius: 12, padding: 8, position: 'relative' }}>
       <video 
-        key={videoKey} // Force re-render when stuck
         ref={ref} 
         autoPlay 
         playsInline 
-        muted={true}
+        muted
         controls={false}
         onClick={handleClick}
+        width="320"
+        height="180"
         style={{ 
-          width: "100%", 
-          aspectRatio: "16/9", 
+          width: "320px", 
+          height: "180px", 
           background: "black", 
           borderRadius: 8, 
           cursor: "pointer",
-          border: "2px solid #00ff00", // Green border for debugging
-          objectFit: "cover"
+          border: "3px solid #ff0000", // Red border for debugging
+          objectFit: "cover",
+          display: "block"
         }} 
       />
       <div style={{ opacity: 0.8, fontSize: 12, marginTop: 4 }}>
-        {rp.peerId.slice(0, 8)} - {isPlaying ? 'Playing' : 'Click to play'}
+        {rp.peerId.slice(0, 8)} - Click to play
       </div>
-      {!isPlaying && (
-        <div style={{ 
-          position: 'absolute', 
-          top: '50%', 
-          left: '50%', 
-          transform: 'translate(-50%, -50%)',
-          background: 'rgba(0,0,0,0.8)',
-          padding: '12px 16px',
-          borderRadius: 8,
-          fontSize: 14,
-          color: 'white',
-          pointerEvents: 'none'
-        }}>
-          ▶ Click to play
-        </div>
-      )}
+      <div style={{ 
+        position: 'absolute', 
+        top: '50%', 
+        left: '50%', 
+        transform: 'translate(-50%, -50%)',
+        background: 'rgba(0,0,0,0.8)',
+        padding: '12px 16px',
+        borderRadius: 8,
+        fontSize: 14,
+        color: 'white',
+        pointerEvents: 'none'
+      }}>
+        ▶ Click to play
+      </div>
     </div>
   );
 }
