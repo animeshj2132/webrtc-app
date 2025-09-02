@@ -27,6 +27,12 @@ function useAttachStream(ref: React.RefObject<HTMLVideoElement>, stream: MediaSt
     // Attach stream if changed
     if ((el as any).srcObject !== stream) {
       console.log('Attaching stream to video element:', !!stream, stream?.getTracks().length);
+      if (stream) {
+        console.log('Stream tracks details:');
+        stream.getTracks().forEach(track => {
+          console.log(`- ${track.kind}: enabled=${track.enabled}, readyState=${track.readyState}, muted=${track.muted}`);
+        });
+      }
       (el as any).srcObject = stream as any;
     }
     
@@ -495,6 +501,23 @@ function RemoteTile({ rp }: { rp: RemotePeer }) {
     
     const onPlay = () => {
       console.log('Remote video started playing');
+      console.log('Video element properties:', {
+        videoWidth: video.videoWidth,
+        videoHeight: video.videoHeight,
+        readyState: video.readyState,
+        paused: video.paused,
+        muted: video.muted,
+        srcObjectTracks: video.srcObject ? (video.srcObject as MediaStream).getTracks().length : 0
+      });
+      
+      // Check if tracks are enabled
+      if (video.srcObject) {
+        const stream = video.srcObject as MediaStream;
+        stream.getTracks().forEach(track => {
+          console.log(`Track ${track.kind}: enabled=${track.enabled}, readyState=${track.readyState}`);
+        });
+      }
+      
       setIsPlaying(true);
     };
     const onPause = () => {
@@ -539,7 +562,15 @@ function RemoteTile({ rp }: { rp: RemotePeer }) {
         muted={true}
         controls={false}
         onClick={handleClick}
-        style={{ width: "100%", aspectRatio: "16/9", background: "black", borderRadius: 8, cursor: "pointer" }} 
+        style={{ 
+          width: "100%", 
+          aspectRatio: "16/9", 
+          background: "black", 
+          borderRadius: 8, 
+          cursor: "pointer",
+          border: "2px solid #00ff00", // Green border for debugging
+          objectFit: "cover"
+        }} 
       />
       <div style={{ opacity: 0.8, fontSize: 12, marginTop: 4 }}>
         {rp.peerId.slice(0, 8)} - {isPlaying ? 'Playing' : 'Click to play'}
