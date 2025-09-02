@@ -33,7 +33,32 @@ function useAttachStream(ref: React.RefObject<HTMLVideoElement>, stream: MediaSt
           console.log(`- ${track.kind}: enabled=${track.enabled}, readyState=${track.readyState}, muted=${track.muted}`);
         });
       }
-      (el as any).srcObject = stream as any;
+      
+      // Force refresh the video element to fix rendering issues
+      (el as any).srcObject = null;
+      setTimeout(() => {
+        (el as any).srcObject = stream as any;
+        
+        // Force the video element to reload/refresh
+        if (stream) {
+          el.load();
+          
+          // Check video dimensions after a delay
+          setTimeout(() => {
+            console.log('Video dimensions after refresh:', {
+              videoWidth: el.videoWidth,
+              videoHeight: el.videoHeight,
+              readyState: el.readyState
+            });
+            
+            // If still no dimensions, try more aggressive refresh
+            if (el.videoWidth === 0 && el.videoHeight === 0) {
+              console.log('Video still has no dimensions, forcing play');
+              el.play().catch(() => {});
+            }
+          }, 500);
+        }
+      }, 50);
     }
     
     if (!stream) return;
@@ -202,7 +227,7 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
         console.log('Adding track:', t.kind, 'enabled:', t.enabled);
         pc.addTrack(t, currentStream);
       });
-      applySenderBitrateCaps(pc);
+    applySenderBitrateCaps(pc);
     } else {
       console.error('CRITICAL: No local stream available when creating PC for:', remoteId);
     }
@@ -231,15 +256,15 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
     try {
       // Get media FIRST and ensure it's available in ref
       const stream = await getUserMedia();
-      await refreshDevices();
+    await refreshDevices();
       console.log('Local stream tracks after getUserMedia:', stream?.getTracks().map(t => `${t.kind}: ${t.enabled}`));
       
       // Ensure the ref has the stream
       currentStreamRef.current = stream;
       console.log('Stream available in ref:', !!currentStreamRef.current);
       
-      const ws = new WebSocket(SIGNAL_URL);
-      wsRef.current = ws;
+    const ws = new WebSocket(SIGNAL_URL);
+    wsRef.current = ws;
     ws.onopen = () => {
       console.log('WebSocket connected to signaling server');
       console.log('Local stream available for connections:', !!localStream || !!stream);
@@ -491,8 +516,26 @@ function Participants({ peersRef }: { peersRef: React.MutableRefObject<Map<PeerI
 function RemoteTile({ rp }: { rp: RemotePeer }) {
   const ref = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [videoKey, setVideoKey] = useState(0); // Force re-render when needed
   
   useAttachStream(ref, rp.stream);
+  
+  // Check if video is actually displaying content
+  useEffect(() => {
+    const checkVideoContent = () => {
+      const video = ref.current;
+      if (!video || !video.srcObject) return;
+      
+      // If video is "playing" but has no dimensions, recreate it
+      if (!video.paused && video.videoWidth === 0 && video.videoHeight === 0) {
+        console.log('Video element stuck, recreating...');
+        setVideoKey(prev => prev + 1); // Force re-render
+      }
+    };
+    
+    const interval = setInterval(checkVideoContent, 2000);
+    return () => clearInterval(interval);
+  }, [rp.stream]);
   
   // Monitor playing state
   useEffect(() => {
@@ -556,6 +599,7 @@ function RemoteTile({ rp }: { rp: RemotePeer }) {
   return (
     <div style={{ background: "rgba(0,0,0,0.4)", borderRadius: 12, padding: 8, position: 'relative' }}>
       <video 
+        key={videoKey} // Force re-render when stuck
         ref={ref} 
         autoPlay 
         playsInline 
