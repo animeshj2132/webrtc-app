@@ -23,26 +23,52 @@ function useAttachStream(ref: React.RefObject<HTMLVideoElement>, stream: MediaSt
   useEffect(() => {
     const el = ref.current as HTMLVideoElement | null;
     if (!el) return;
+    
     // Attach stream if changed
-    if ((el as any).srcObject !== stream) (el as any).srcObject = stream as any;
+    if ((el as any).srcObject !== stream) {
+      console.log('Attaching stream to video element:', !!stream, stream?.getTracks().length);
+      (el as any).srcObject = stream as any;
+    }
+    
     if (!stream) return;
+    
     // Force playback to avoid autoplay blocking
     const attemptPlay = () => {
+      console.log('Attempting to play video element, readyState:', el.readyState);
       try {
         const p = el.play();
         if (p && typeof p.then === 'function') {
-          p.catch((err: any) => {
+          p.then(() => {
+            console.log('Video playing successfully');
+          }).catch((err: any) => {
+            console.log('Play failed, trying muted:', err.name);
             // If autoplay with audio is blocked, mute and retry like MiroTalk does
             if (err && (err.name === 'NotAllowedError' || err.code === 0)) {
               el.muted = true;
               el.volume = 0;
-              try { el.play().catch(() => {}); } catch {}
+              try { 
+                el.play().then(() => {
+                  console.log('Video playing muted successfully');
+                }).catch(() => {
+                  console.log('Even muted play failed');
+                }); 
+              } catch {}
             }
           });
         }
-      } catch {}
+      } catch (e) {
+        console.log('Play attempt failed:', e);
+      }
     };
-    if (el.readyState >= 2) attemptPlay(); else el.onloadedmetadata = attemptPlay;
+    
+    if (el.readyState >= 2) {
+      attemptPlay();
+    } else {
+      el.onloadedmetadata = () => {
+        console.log('Video metadata loaded, readyState:', el.readyState);
+        attemptPlay();
+      };
+    }
   }, [ref, stream]);
 }
 interface RemotePeer { peerId: PeerId; pc: RTCPeerConnection; stream: MediaStream; }
@@ -410,10 +436,33 @@ function Participants({ peersRef }: { peersRef: React.MutableRefObject<Map<PeerI
 function RemoteTile({ rp }: { rp: RemotePeer }) {
   const ref = useRef<HTMLVideoElement>(null);
   useAttachStream(ref, rp.stream);
+  
+  // Force click-to-play as fallback
+  const handleClick = () => {
+    if (ref.current) {
+      console.log('Manual play attempt on remote video');
+      ref.current.play().catch(e => {
+        console.log('Manual play failed:', e);
+        ref.current!.muted = true;
+        ref.current!.play().catch(() => {});
+      });
+    }
+  };
+  
   return (
     <div style={{ background: "rgba(0,0,0,0.4)", borderRadius: 12, padding: 8 }}>
-      <video ref={ref} autoPlay playsInline style={{ width: "100%", aspectRatio: "16/9", background: "black", borderRadius: 8 }} />
-      <div style={{ opacity: 0.8, fontSize: 12, marginTop: 4 }}>{rp.peerId.slice(0, 8)}</div>
+      <video 
+        ref={ref} 
+        autoPlay 
+        playsInline 
+        muted={false}
+        controls={false}
+        onClick={handleClick}
+        style={{ width: "100%", aspectRatio: "16/9", background: "black", borderRadius: 8, cursor: "pointer" }} 
+      />
+      <div style={{ opacity: 0.8, fontSize: 12, marginTop: 4 }}>
+        {rp.peerId.slice(0, 8)} - Click to play
+      </div>
     </div>
   );
 }
