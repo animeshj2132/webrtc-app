@@ -63,6 +63,7 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
   const wsRef = useRef<WebSocket | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const peersRef = useRef<Map<PeerId, RemotePeer>>(new Map());
+  const currentStreamRef = useRef<MediaStream | null>(null);
   const [, setTick] = useState(0);
   const force = () => setTick((x) => x + 1);
   useAttachStream(localVideoRef, localStream);
@@ -79,6 +80,7 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
         video: selectedCam ? { deviceId: { exact: selectedCam } } : { width: { ideal: 1280 }, height: { ideal: 720 } }
       }
     );
+    currentStreamRef.current = stream;
     setLocalStream(stream);
     return stream;
   }
@@ -134,8 +136,8 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
       }
     };
     
-    // Use the provided stream or current localStream
-    const currentStream = streamToUse || localStream;
+    // Use the provided stream, current localStream, or the ref
+    const currentStream = streamToUse || localStream || currentStreamRef.current;
     if (currentStream) {
       console.log('Adding local stream tracks to peer connection for:', remoteId);
       currentStream.getTracks().forEach(t => {
@@ -163,13 +165,14 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
     console.log('Joining room:', roomId, 'with peer ID:', peerId);
     console.log('Signal server URL:', SIGNAL_URL);
     
-    // Get media FIRST and wait for it to be set in state
+    // Get media FIRST and ensure it's available in ref
     const stream = await getUserMedia();
     await refreshDevices();
     console.log('Local stream tracks after getUserMedia:', stream?.getTracks().map(t => `${t.kind}: ${t.enabled}`));
     
-    // Wait a bit for state to update
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Ensure the ref has the stream
+    currentStreamRef.current = stream;
+    console.log('Stream available in ref:', !!currentStreamRef.current);
     
     const ws = new WebSocket(SIGNAL_URL);
     wsRef.current = ws;
@@ -184,10 +187,10 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
       // Newcomer makes the offer to existing peers.
   if (msg.type === "peers") {
   console.log('Received peers list:', msg.payload.peers);
-  console.log('Current local stream when receiving peers:', !!localStream, !!stream);
+  console.log('Current local stream when receiving peers:', !!localStream, !!stream, !!currentStreamRef.current);
   
   // Ensure we have local stream before making calls
-  const currentStream = localStream || stream;
+  const currentStream = localStream || stream || currentStreamRef.current;
   if (!currentStream) {
     console.error('CRITICAL: No local stream available when trying to call peers!');
     return;
@@ -206,10 +209,10 @@ if (msg.type === "new-peer") {
       if (msg.type === "offer") {
         const { from, sdp } = msg.payload;
         console.log('Received offer from peer:', from);
-        console.log('Local stream available for answer:', !!localStream, !!stream);
+        console.log('Local stream available for answer:', !!localStream, !!stream, !!currentStreamRef.current);
         
         // Ensure we have local stream before creating PC
-        const currentStream = localStream || stream;
+        const currentStream = localStream || stream || currentStreamRef.current;
         if (!currentStream) {
           console.error('CRITICAL: No local stream available when receiving offer from:', from);
           return;
