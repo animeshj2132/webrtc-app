@@ -68,17 +68,26 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
   function createPC(remoteId: PeerId) {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     const remoteStream = new MediaStream();
-    // pc.ontrack = (e) => {
-    //   e.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
-    //   const rp = peersRef.current.get(remoteId);
-    //   if (rp) rp.stream = remoteStream; else peersRef.current.set(remoteId, { peerId: remoteId, pc, stream: remoteStream });
-    //   force();
-    // };
+    
     pc.ontrack = (e) => {
-      const rp = peersRef.current.get(remoteId) || { peerId: remoteId, pc, stream: new MediaStream() };
-      e.streams[0]?.getTracks().forEach(t => rp.stream.addTrack(t));
-      e.track && rp.stream.addTrack(e.track);
-      peersRef.current.set(remoteId, rp);
+      console.log('Received track from peer', remoteId, 'track kind:', e.track.kind);
+      
+      // Use the stream from the event if available, otherwise use our created stream
+      const streamToUse = e.streams && e.streams.length > 0 ? e.streams[0] : remoteStream;
+      
+      // If we're using our own stream, add the track to it
+      if (streamToUse === remoteStream) {
+        remoteStream.addTrack(e.track);
+      }
+      
+      const rp = peersRef.current.get(remoteId);
+      if (rp) {
+        rp.stream = streamToUse;
+      } else {
+        peersRef.current.set(remoteId, { peerId: remoteId, pc, stream: streamToUse });
+      }
+      
+      console.log('Remote stream updated for peer', remoteId, 'tracks:', streamToUse.getTracks().length);
       force();
     };    
     pc.onicecandidate = (e) => {
@@ -88,29 +97,45 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
       }
     };
     pc.onconnectionstatechange = () => {
+      console.log('Connection state changed for peer', remoteId, ':', pc.connectionState);
       if (["disconnected", "failed", "closed"].includes(pc.connectionState)) {
         const rp = peersRef.current.get(remoteId); if (rp) rp.stream.getTracks().forEach(t => t.stop());
         pc.close(); peersRef.current.delete(remoteId); force();
       }
     };
-    if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-    applySenderBitrateCaps(pc);
+    if (localStream) {
+      console.log('Adding local stream tracks to peer connection for:', remoteId);
+      localStream.getTracks().forEach(t => {
+        console.log('Adding track:', t.kind, 'enabled:', t.enabled);
+        pc.addTrack(t, localStream);
+      });
+      applySenderBitrateCaps(pc);
+    } else {
+      console.warn('No local stream available when creating PC for:', remoteId);
+    }
     peersRef.current.set(remoteId, { peerId: remoteId, pc, stream: remoteStream });
     return pc;
   }
   async function callPeer(otherId: PeerId) {
+    console.log('Calling peer:', otherId);
     const pc = createPC(otherId);
+    console.log('Local stream tracks before offer:', localStream?.getTracks().map(t => t.kind));
     const offer = await pc.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: true });
     await pc.setLocalDescription(offer);
+    console.log('Sending offer to peer:', otherId);
     wsRef.current?.send(JSON.stringify({ type: "offer", payload: { from: peerId, to: otherId, sdp: offer } } as SignalMessage));
   }
   async function join() {
     if (connected) return;
+    console.log('Joining room:', roomId, 'with peer ID:', peerId);
+    console.log('Signal server URL:', SIGNAL_URL);
     await getUserMedia();
     await refreshDevices();
+    console.log('Local stream tracks after getUserMedia:', localStream?.getTracks().map(t => `${t.kind}: ${t.enabled}`));
     const ws = new WebSocket(SIGNAL_URL);
     wsRef.current = ws;
     ws.onopen = () => {
+      console.log('WebSocket connected to signaling server');
       ws.send(JSON.stringify({ type: "join", payload: { room: roomId, peerId } } as SignalMessage));
       setConnected(true);
     };
@@ -118,6 +143,7 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
       const msg: SignalMessage = JSON.parse(ev.data);
       // Newcomer makes the offer to existing peers.
   if (msg.type === "peers") {
+  console.log('Received peers list:', msg.payload.peers);
   for (const id of msg.payload.peers) await callPeer(id);
 }
 
@@ -128,16 +154,33 @@ if (msg.type === "new-peer") {
 
       if (msg.type === "offer") {
         const { from, sdp } = msg.payload;
-        if (!peersRef.current.get(from)) createPC(from);
+        console.log('Received offer from peer:', from);
+        if (!peersRef.current.get(from)) {
+          createPC(from);
+        }
         const pc = peersRef.current.get(from)!.pc;
+        
+        // Ensure local stream is added to the peer connection
+        if (localStream && pc.getSenders().length === 0) {
+          console.log('Adding local stream to existing PC for:', from);
+          localStream.getTracks().forEach(t => {
+            console.log('Adding track to existing PC:', t.kind, 'enabled:', t.enabled);
+            pc.addTrack(t, localStream);
+          });
+          applySenderBitrateCaps(pc);
+        }
+        
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
+        console.log('Sending answer to peer:', from);
         ws.send(JSON.stringify({ type: "answer", payload: { from: peerId, to: from, sdp: answer } } as SignalMessage));
       }
       if (msg.type === "answer") {
         const { from, sdp } = msg.payload; const rp = peersRef.current.get(from); if (!rp) return;
+        console.log('Received answer from peer:', from);
         await rp.pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        console.log('Set remote description for peer:', from);
       }
       if (msg.type === "ice") {
         const { from, candidate } = msg.payload; const rp = peersRef.current.get(from); if (!rp) return;
@@ -149,6 +192,10 @@ if (msg.type === "new-peer") {
       }
     };
     ws.onclose = cleanup;
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      cleanup();
+    };
   }
   function cleanup() {
     setConnected(false);
