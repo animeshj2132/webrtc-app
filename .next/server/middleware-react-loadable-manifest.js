@@ -1,1 +1,0 @@
-self.__REACT_LOADABLE_MANIFEST="{\"app/r/[roomId]/page.tsx -> ../../components/CallRoom\":{\"id\":\"app/r/[roomId]/page.tsx -> ../../components/CallRoom\",\"files\":[\"static/chunks/_app-pages-browser_app_components_CallRoom_tsx.js\"]}}"
