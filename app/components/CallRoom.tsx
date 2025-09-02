@@ -119,7 +119,7 @@ export default function CallRoom({ initialRoomId }: { initialRoomId?: string }) 
     };    
     pc.onicecandidate = (e) => {
       if (e.candidate && wsRef.current) {
-        console.log('Sending ICE candidate to peer:', remoteId, 'type:', e.candidate.type);
+        console.log('Sending ICE candidate to peer:', remoteId, 'type:', e.candidate.type || 'unknown');
         const msg: SignalMessage = { type: "ice", payload: { from: peerId, to: remoteId, candidate: e.candidate.toJSON() } };
         wsRef.current.send(JSON.stringify(msg));
       } else if (!e.candidate) {
@@ -244,7 +244,7 @@ if (msg.type === "new-peer") {
       }
       if (msg.type === "ice") {
         const { from, candidate } = msg.payload; const rp = peersRef.current.get(from); if (!rp) return;
-        console.log('Received ICE candidate from peer:', from, 'type:', candidate.type);
+        console.log('Received ICE candidate from peer:', from, 'type:', (candidate as any)?.type || 'unknown');
         try { 
           await rp.pc.addIceCandidate(new RTCIceCandidate(candidate)); 
           console.log('Successfully added ICE candidate from peer:', from);
