@@ -33,40 +33,65 @@ function useAttachStream(ref: React.RefObject<HTMLVideoElement>, stream: MediaSt
     if (!stream) return;
     
     // Force playback to avoid autoplay blocking
-    const attemptPlay = () => {
-      console.log('Attempting to play video element, readyState:', el.readyState);
+    const attemptPlay = async () => {
+      console.log('Attempting to play video element, readyState:', el.readyState, 'paused:', el.paused);
+      
+      // Set properties to ensure video can play
+      el.muted = true; // Start muted to avoid autoplay blocks
+      el.autoplay = true;
+      el.playsInline = true;
+      
       try {
-        const p = el.play();
-        if (p && typeof p.then === 'function') {
-          p.then(() => {
-            console.log('Video playing successfully');
-          }).catch((err: any) => {
-            console.log('Play failed, trying muted:', err.name);
-            // If autoplay with audio is blocked, mute and retry like MiroTalk does
-            if (err && (err.name === 'NotAllowedError' || err.code === 0)) {
-              el.muted = true;
-              el.volume = 0;
-              try { 
-                el.play().then(() => {
-                  console.log('Video playing muted successfully');
-                }).catch(() => {
-                  console.log('Even muted play failed');
-                }); 
-              } catch {}
-            }
-          });
+        const playPromise = el.play();
+        if (playPromise) {
+          await playPromise;
+          console.log('Video playing successfully (muted)');
+          
+          // Try to unmute after successful play
+          setTimeout(() => {
+            el.muted = false;
+            console.log('Unmuted video');
+          }, 500);
         }
-      } catch (e) {
-        console.log('Play attempt failed:', e);
+      } catch (err: any) {
+        console.log('Initial play failed:', err.name, err.message);
+        
+        // Force play with different strategies
+        try {
+          el.load(); // Reload the video element
+          await new Promise(resolve => setTimeout(resolve, 100));
+          await el.play();
+          console.log('Video playing after reload');
+        } catch (err2) {
+          console.log('Reload play failed:', err2);
+          
+          // Last resort - click simulation
+          setTimeout(() => {
+            console.log('Attempting click simulation for autoplay');
+            el.click();
+          }, 1000);
+        }
       }
     };
     
-    if (el.readyState >= 2) {
+    // Multiple play attempts
+    const tryPlay = () => {
       attemptPlay();
+      // Retry after a short delay
+      setTimeout(attemptPlay, 100);
+      setTimeout(attemptPlay, 500);
+    };
+    
+    if (el.readyState >= 2) {
+      tryPlay();
     } else {
       el.onloadedmetadata = () => {
         console.log('Video metadata loaded, readyState:', el.readyState);
-        attemptPlay();
+        tryPlay();
+      };
+      el.oncanplay = () => {
+        console.log('Video can play, readyState:', el.readyState);
+        tryPlay();
       };
     }
   }, [ref, stream]);
@@ -459,34 +484,82 @@ function Participants({ peersRef }: { peersRef: React.MutableRefObject<Map<PeerI
 }
 function RemoteTile({ rp }: { rp: RemotePeer }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  
   useAttachStream(ref, rp.stream);
   
+  // Monitor playing state
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return;
+    
+    const onPlay = () => {
+      console.log('Remote video started playing');
+      setIsPlaying(true);
+    };
+    const onPause = () => {
+      console.log('Remote video paused');
+      setIsPlaying(false);
+    };
+    
+    video.addEventListener('play', onPlay);
+    video.addEventListener('pause', onPause);
+    video.addEventListener('playing', onPlay);
+    
+    return () => {
+      video.removeEventListener('play', onPlay);
+      video.removeEventListener('pause', onPause);
+      video.removeEventListener('playing', onPlay);
+    };
+  }, []);
+  
   // Force click-to-play as fallback
-  const handleClick = () => {
+  const handleClick = async () => {
     if (ref.current) {
       console.log('Manual play attempt on remote video');
-      ref.current.play().catch(e => {
+      try {
+        ref.current.muted = true;
+        await ref.current.play();
+        console.log('Manual play successful');
+        setTimeout(() => {
+          if (ref.current) ref.current.muted = false;
+        }, 500);
+      } catch (e) {
         console.log('Manual play failed:', e);
-        ref.current!.muted = true;
-        ref.current!.play().catch(() => {});
-      });
+      }
     }
   };
   
   return (
-    <div style={{ background: "rgba(0,0,0,0.4)", borderRadius: 12, padding: 8 }}>
+    <div style={{ background: "rgba(0,0,0,0.4)", borderRadius: 12, padding: 8, position: 'relative' }}>
       <video 
         ref={ref} 
         autoPlay 
         playsInline 
-        muted={false}
+        muted={true}
         controls={false}
         onClick={handleClick}
         style={{ width: "100%", aspectRatio: "16/9", background: "black", borderRadius: 8, cursor: "pointer" }} 
       />
       <div style={{ opacity: 0.8, fontSize: 12, marginTop: 4 }}>
-        {rp.peerId.slice(0, 8)} - Click to play
+        {rp.peerId.slice(0, 8)} - {isPlaying ? 'Playing' : 'Click to play'}
       </div>
+      {!isPlaying && (
+        <div style={{ 
+          position: 'absolute', 
+          top: '50%', 
+          left: '50%', 
+          transform: 'translate(-50%, -50%)',
+          background: 'rgba(0,0,0,0.8)',
+          padding: '12px 16px',
+          borderRadius: 8,
+          fontSize: 14,
+          color: 'white',
+          pointerEvents: 'none'
+        }}>
+          ▶ Click to play
+        </div>
+      )}
     </div>
   );
 }
